@@ -1,15 +1,15 @@
 {
   "all_models": [
     {
-      "backbone": "mobilenetv2",
-      "validation_accuracy": 0.5,
-      "num_classes": 2,
-      "model_file": "E:\\Studying\\Spring 26\\CSE488\\Project\\Attendance Marking System\\models\\mobilenetv2_model.keras"
+      "backbone": "efficientnetb0",
+      "validation_accuracy": 0.9059139490127563,
+      "num_classes": 31,
+      "model_file": "E:\\Studying\\Spring 26\\CSE488\\Project\\Attendance Marking System\\models\\efficientnetb0_model.keras"
     }
   ],
   "best_model": {
-    "backbone": "mobilenetv2",
-    "validation_accuracy": 0.5,
-    "model_file": "E:\\Studying\\Spring 26\\CSE488\\Project\\Attendance Marking System\\models\\mobilenetv2_model.keras"
+    "backbone": "efficientnetb0",
+    "validation_accuracy": 0.9059139490127563,
+    "model_file": "E:\\Studying\\Spring 26\\CSE488\\Project\\Attendance Marking System\\models\\efficientnetb0_model.keras"
   }
 }
