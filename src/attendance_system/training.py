@@ -164,6 +164,48 @@ def train_single_backbone(
     _require_tensorflow()
     import tensorflow as tf
     from tensorflow import keras as _keras
+    import numpy as _np
+    import shutil
+    from sklearn.model_selection import train_test_split
+
+    dataset_dir = Path(dataset_dir)
+    
+    # Create temporary split directories for train/val/test
+    temp_split_dir = dataset_dir.parent / f"{dataset_dir.name}_split_temp"
+    temp_split_dir.mkdir(exist_ok=True)
+    
+    train_dir = temp_split_dir / "train"
+    val_dir = temp_split_dir / "val"
+    test_dir = temp_split_dir / "test"
+    
+    for split_dir in [train_dir, val_dir, test_dir]:
+        split_dir.mkdir(exist_ok=True)
+    
+    # Organize files into train/val/test (60/20/20 split)
+    for class_dir in dataset_dir.iterdir():
+        if not class_dir.is_dir():
+            continue
+        
+        # Create class subdirectories in split folders
+        for split_dir in [train_dir, val_dir, test_dir]:
+            (split_dir / class_dir.name).mkdir(exist_ok=True)
+        
+        # Get all image files
+        images = list(class_dir.glob("*"))
+        if not images:
+            continue
+        
+        # Split: 60% train, 20% val, 20% test
+        train_imgs, temp_imgs = train_test_split(images, test_size=0.4, random_state=42)
+        val_imgs, test_imgs = train_test_split(temp_imgs, test_size=0.5, random_state=42)
+        
+        # Copy files to split directories
+        for img in train_imgs:
+            shutil.copy2(img, train_dir / class_dir.name / img.name)
+        for img in val_imgs:
+            shutil.copy2(img, val_dir / class_dir.name / img.name)
+        for img in test_imgs:
+            shutil.copy2(img, test_dir / class_dir.name / img.name)
 
     # Optionally enable mixed precision for faster GPU training
     if mixed_precision:
@@ -184,8 +226,8 @@ def train_single_backbone(
         except Exception:
             strategy = None
             print("Requested distribution strategy not available; continuing without it.")
+    
     train_generator = ImageDataGenerator(
-        validation_split=0.2,
         rotation_range=20,
         width_shift_range=0.1,
         height_shift_range=0.1,
@@ -194,23 +236,33 @@ def train_single_backbone(
         horizontal_flip=True,
         fill_mode="nearest",
     )
-    validation_generator = ImageDataGenerator(validation_split=0.2)
+    
+    val_generator = ImageDataGenerator()
+    test_generator = ImageDataGenerator()
+    
     _attach_preprocessing(train_generator, backbone_name)
-    _attach_preprocessing(validation_generator, backbone_name)
+    _attach_preprocessing(val_generator, backbone_name)
+    _attach_preprocessing(test_generator, backbone_name)
 
     train_flow = train_generator.flow_from_directory(
-        str(dataset_dir),
+        str(train_dir),
         target_size=FACE_INPUT_SIZE,
         batch_size=batch_size,
         class_mode="categorical",
-        subset="training",
+        shuffle=True,
     )
-    validation_flow = validation_generator.flow_from_directory(
-        str(dataset_dir),
+    val_flow = val_generator.flow_from_directory(
+        str(val_dir),
         target_size=FACE_INPUT_SIZE,
         batch_size=batch_size,
         class_mode="categorical",
-        subset="validation",
+        shuffle=False,
+    )
+    test_flow = test_generator.flow_from_directory(
+        str(test_dir),
+        target_size=FACE_INPUT_SIZE,
+        batch_size=batch_size,
+        class_mode="categorical",
         shuffle=False,
     )
 
@@ -224,8 +276,6 @@ def train_single_backbone(
 
     # Compute class weights to address imbalance
     try:
-        import numpy as _np
-
         classes = getattr(train_flow, "classes", None)
         if classes is not None:
             counts = _np.bincount(classes, minlength=train_flow.num_classes)
@@ -248,7 +298,7 @@ def train_single_backbone(
     print(f"Stage 1/2: training classifier head for {head_epochs} epochs")
     history = model.fit(
         train_flow,
-        validation_data=validation_flow,
+        validation_data=val_flow,
         epochs=head_epochs,
         callbacks=callbacks,
         class_weight=class_weight,
@@ -271,7 +321,7 @@ def train_single_backbone(
             print(f"Stage 2/2: fine-tuning last {trainable_tail_layers} backbone layers for {fine_tune_epochs} epochs")
             history = model.fit(
                 train_flow,
-                validation_data=validation_flow,
+                validation_data=val_flow,
                 epochs=fine_tune_epochs,
                 callbacks=callbacks,
                 class_weight=class_weight,
@@ -279,9 +329,18 @@ def train_single_backbone(
         except Exception:
             print("Fine-tuning failed; proceeding with the trained head model.")
 
-    evaluation = model.evaluate(validation_flow, verbose=0)
-    validation_accuracy = float(evaluation[1]) if len(evaluation) > 1 else 0.0
-    return history, model, train_flow, validation_accuracy
+    # Evaluate on held-out test set (no data leakage!)
+    test_evaluation = model.evaluate(test_flow, verbose=0)
+    test_accuracy = float(test_evaluation[1]) if len(test_evaluation) > 1 else 0.0
+    val_accuracy = float(history.history["val_accuracy"][-1]) if history and "val_accuracy" in history.history else 0.0
+    
+    print(f"Validation Accuracy: {val_accuracy:.4f}")
+    print(f"Test Accuracy (final unbiased): {test_accuracy:.4f}")
+    
+    # Cleanup temporary split directory
+    shutil.rmtree(temp_split_dir)
+    
+    return history, model, train_flow, test_accuracy, val_accuracy
 
 
 def train_recognition_model(
@@ -315,7 +374,7 @@ def train_recognition_model(
         print(f"Phase {candidates.index(candidate_backbone) + 1}/{len(candidates)}: Training {candidate_backbone.upper()}")
         print(f"{'='*60}")
         
-        history, model, train_flow, validation_accuracy = train_single_backbone(
+        history, model, train_flow, test_accuracy, val_accuracy = train_single_backbone(
             dataset_dir,
             candidate_backbone,
             epochs=epochs,
@@ -330,22 +389,24 @@ def train_recognition_model(
         model.save(model_file)
         print(f"Saved model: {model_file}")
         
-        # Store results for comparison
+        # Store results for comparison (use test accuracy for selection - no data leakage!)
         result_entry = {
             "backbone": candidate_backbone,
-            "validation_accuracy": float(validation_accuracy),
+            "test_accuracy": float(test_accuracy),
+            "validation_accuracy": float(val_accuracy),
             "num_classes": train_flow.num_classes,
             "model_file": str(model_file),
         }
         all_results.append(result_entry)
         
-        # Track best result
-        if best_result is None or validation_accuracy > best_result["validation_accuracy"]:
+        # Track best result (select based on test accuracy - unbiased!)
+        if best_result is None or test_accuracy > best_result["test_accuracy"]:
             best_result = {
                 "history": history,
                 "model": model,
                 "train_flow": train_flow,
-                "validation_accuracy": validation_accuracy,
+                "test_accuracy": test_accuracy,
+                "validation_accuracy": val_accuracy,
                 "backbone": candidate_backbone,
                 "model_file": str(model_file),
             }
@@ -361,6 +422,7 @@ def train_recognition_model(
         "all_models": all_results,
         "best_model": {
             "backbone": best_result["backbone"],
+            "test_accuracy": best_result["test_accuracy"],
             "validation_accuracy": best_result["validation_accuracy"],
             "model_file": best_result["model_file"],
         }
@@ -370,7 +432,7 @@ def train_recognition_model(
     
     for entry in all_results:
         is_best = "BEST" if entry["backbone"] == best_result["backbone"] else ""
-        print(f"{entry['backbone']:20s} | Accuracy: {entry['validation_accuracy']:.4f} {is_best}")
+        print(f"{entry['backbone']:20s} | Test Accuracy: {entry['test_accuracy']:.4f} | Val Accuracy: {entry['validation_accuracy']:.4f} {is_best}")
     print(f"{'='*60}")
     print(f"Saved comparison: {comparison_file}")
     
@@ -385,6 +447,7 @@ def train_recognition_model(
 
     metadata = {
         "backbone": best_result["backbone"],
+        "test_accuracy": best_result["test_accuracy"],
         "validation_accuracy": best_result["validation_accuracy"],
         "num_classes": best_result["train_flow"].num_classes,
         "class_indices": best_result["train_flow"].class_indices,
@@ -393,4 +456,3 @@ def train_recognition_model(
         json.dump(metadata, file_handle, indent=2)
 
     return best_result["history"], best_result["model"], metadata
-
