@@ -13,6 +13,7 @@ LABEL_MAP_PATH = MODELS_DIR / "label_map.json"
 RECOGNITION_METADATA_PATH = MODELS_DIR / "recognition_metadata.json"
 
 RECOGNITION_BACKBONES = ("mobilenetv2", "efficientnetb0", "vgg16")
+DEFAULT_RECOGNITION_BACKBONE = "efficientnetb0"
 
 FACE_INPUT_SIZE = (224, 224)
 

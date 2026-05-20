@@ -1,8 +1,9 @@
 {
   "backbone": "mobilenetv2",
-  "validation_accuracy": 1.0,
-  "num_classes": 1,
+  "validation_accuracy": 0.5,
+  "num_classes": 2,
   "class_indices": {
-    "Youssef": 0
+    "Ahmed": 0,
+    "Youssef": 1
   }
 }

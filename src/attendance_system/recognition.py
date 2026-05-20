@@ -39,7 +39,12 @@ PREPROCESSORS = {
 
 
 class MobileNetV2Recognizer:
-    def __init__(self, model_path: Path = RECOGNITION_MODEL_PATH, label_map_path: Path = LABEL_MAP_PATH, metadata_path: Path = RECOGNITION_METADATA_PATH) -> None:
+    def __init__(
+        self,
+        model_path: Path = RECOGNITION_MODEL_PATH,
+        label_map_path: Path = LABEL_MAP_PATH,
+        metadata_path: Path = RECOGNITION_METADATA_PATH,
+    ) -> None:
         if cv2 is None:
             raise RuntimeError("OpenCV is required for recognition preprocessing. Install requirements.txt first.")
         self.model_path = Path(model_path)
@@ -48,7 +53,7 @@ class MobileNetV2Recognizer:
         self.backbone_name = "mobilenetv2"
         self.model = self._load_model()
         self.index_to_label = self._load_label_map()
-        self.preprocess = PREPROCESSORS[self.backbone_name]
+        self.preprocess = PREPROCESSORS.get(self.backbone_name, mobilenet_preprocess_input)
 
     def _load_metadata(self) -> dict:
         if not self.metadata_path.exists():

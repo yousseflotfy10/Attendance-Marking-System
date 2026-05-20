@@ -10,6 +10,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from attendance_system.training import train_recognition_model
+from attendance_system.config import DEFAULT_RECOGNITION_BACKBONE
 
 
 def _tensorflow_available() -> bool:
@@ -43,7 +44,7 @@ def _parse_args(argv: list[str]) -> tuple[Path, int, int, str]:
     dataset = Path("dataset")
     epochs = 15
     batch_size = 32
-    backbone = "auto"
+    backbone = DEFAULT_RECOGNITION_BACKBONE
 
     index = 0
     while index < len(argv):
@@ -65,7 +66,7 @@ def _parse_args(argv: list[str]) -> tuple[Path, int, int, str]:
             index += 2
             continue
         raise RuntimeError(
-            "Usage: python train_model.py [--dataset dataset] [--epochs 15] [--batch-size 32] [--backbone auto|mobilenetv2|efficientnetb0|vgg16]"
+            "Usage: python train_model.py [--dataset dataset] [--epochs 15] [--batch-size 32] [--backbone efficientnetb0|auto|mobilenetv2|vgg16]"
         )
 
     return dataset, epochs, batch_size, backbone

@@ -5,7 +5,7 @@ import sys
 import time
 from pathlib import Path
 
-from .config import DATABASE_PATH
+from .config import DATABASE_PATH, DEFAULT_RECOGNITION_BACKBONE
 from .db import AttendanceDatabase
 
 
@@ -21,15 +21,18 @@ def build_parser() -> argparse.ArgumentParser:
     collect_parser.add_argument("--samples", type=int, default=100, help="Number of samples to capture")
     collect_parser.add_argument("--camera", type=int, default=0, help="Camera index")
 
-    train_parser = subparsers.add_parser("train", help="Train and compare recognition backbones")
+    train_parser = subparsers.add_parser("train", help="Train the production recognition backbone")
     train_parser.add_argument("--dataset", type=Path, default=Path("dataset"), help="Dataset root directory")
     train_parser.add_argument("--epochs", type=int, default=15, help="Training epochs")
     train_parser.add_argument("--batch-size", type=int, default=32, help="Training batch size")
+    train_parser.add_argument("--mixed-precision", action="store_true", help="Enable TensorFlow mixed precision for faster GPU training")
+    train_parser.add_argument("--use-distribute", action="store_true", help="Use tf.distribute.MirroredStrategy when available")
+    train_parser.add_argument("--workers", type=int, default=4, help="Number of data loader worker processes for training")
     train_parser.add_argument(
         "--backbone",
         choices=["auto", "mobilenetv2", "efficientnetb0", "vgg16"],
-        default="auto",
-        help="Recognition backbone to train; auto compares all 3 and keeps the best",
+        default=DEFAULT_RECOGNITION_BACKBONE,
+        help="Recognition backbone to train; auto compares the draft backbones and keeps the best",
     )
 
     synthetic_parser = subparsers.add_parser("synthetic", help="Generate a synthetic dataset for quick testing")
@@ -101,6 +104,9 @@ def main(argv: list[str] | None = None) -> int:
             epochs=args.epochs,
             batch_size=args.batch_size,
             backbone=args.backbone,
+            mixed_precision=bool(args.mixed_precision),
+            use_distribute=bool(args.use_distribute),
+            workers=int(args.workers),
         )
         elapsed_seconds = time.perf_counter() - start_time
         print(
