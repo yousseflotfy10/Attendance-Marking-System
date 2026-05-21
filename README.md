@@ -57,7 +57,6 @@ python -m attendance_system.cli run
 If you want separate files for each task:
 
 ```bash
-python collect_faces.py
 python train_model.py --dataset dataset --epochs 15 --batch-size 32 --backbone auto
 ```
 
