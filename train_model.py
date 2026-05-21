@@ -9,8 +9,8 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from attendance_system.training import train_recognition_model
-from attendance_system.config import DEFAULT_RECOGNITION_BACKBONE
+from training import train_recognition_model
+from config import DEFAULT_RECOGNITION_BACKBONE
 
 
 def _tensorflow_available() -> bool:

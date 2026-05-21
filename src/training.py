@@ -23,7 +23,7 @@ except Exception:
     efficientnet_preprocess_input = None
     vgg16_preprocess_input = None
 
-from .config import (
+from config import (
     DEFAULT_RECOGNITION_BACKBONE,
     FACE_INPUT_SIZE,
     LABEL_MAP_PATH,
@@ -165,59 +165,67 @@ def train_single_backbone(
     import tensorflow as tf
     from tensorflow import keras as _keras
     import numpy as _np
-    import shutil
     from sklearn.model_selection import train_test_split
+    import os
+    from PIL import Image
 
     dataset_dir = Path(dataset_dir)
     
-    # Create temporary split directories for train/val/test
-    temp_split_dir = dataset_dir.parent / f"{dataset_dir.name}_split_temp"
-    temp_split_dir.mkdir(exist_ok=True)
+    # Load all images in memory and split them (train:60%, val:20%, test:20%)
+    print("Loading dataset...")
+    all_images = []
+    all_labels = []
+    class_to_idx = {}
+    idx_to_class = {}
     
-    train_dir = temp_split_dir / "train"
-    val_dir = temp_split_dir / "val"
-    test_dir = temp_split_dir / "test"
-    
-    for split_dir in [train_dir, val_dir, test_dir]:
-        split_dir.mkdir(exist_ok=True)
-    
-    # Organize files into train/val/test (60/20/20 split)
-    for class_dir in dataset_dir.iterdir():
+    class_idx = 0
+    for class_dir in sorted(dataset_dir.iterdir()):
         if not class_dir.is_dir():
             continue
+        class_name = class_dir.name
+        class_to_idx[class_name] = class_idx
+        idx_to_class[class_idx] = class_name
         
-        # Create class subdirectories in split folders
-        for split_dir in [train_dir, val_dir, test_dir]:
-            (split_dir / class_dir.name).mkdir(exist_ok=True)
-        
-        # Get all image files
-        images = list(class_dir.glob("*"))
-        if not images:
-            continue
-        
-        # Split: 60% train, 20% val, 20% test
-        train_imgs, temp_imgs = train_test_split(images, test_size=0.4, random_state=42)
-        val_imgs, test_imgs = train_test_split(temp_imgs, test_size=0.5, random_state=42)
-        
-        # Copy files to split directories
-        for img in train_imgs:
-            shutil.copy2(img, train_dir / class_dir.name / img.name)
-        for img in val_imgs:
-            shutil.copy2(img, val_dir / class_dir.name / img.name)
-        for img in test_imgs:
-            shutil.copy2(img, test_dir / class_dir.name / img.name)
-
-    # Optionally enable mixed precision for faster GPU training
+        for img_path in sorted(class_dir.glob("*")):
+            if img_path.suffix.lower() not in ['.jpg', '.jpeg', '.png', '.gif', '.bmp']:
+                continue
+            try:
+                img = Image.open(img_path).convert('RGB')
+                img = img.resize((FACE_INPUT_SIZE[0], FACE_INPUT_SIZE[1]))
+                img_array = _np.array(img)
+                all_images.append(img_array)
+                all_labels.append(class_idx)
+            except Exception as e:
+                print(f"Warning: Could not load {img_path}: {e}")
+                continue
+        class_idx += 1
+    
+    all_images = _np.array(all_images, dtype='uint8')
+    all_labels = _np.array(all_labels, dtype='int32')
+    
+    num_classes = len(class_to_idx)
+    print(f"Loaded {len(all_images)} images from {num_classes} classes")
+    
+    # Split: 60% train, 20% val, 20% test (avoid data leakage by splitting first)
+    train_imgs, temp_imgs, train_labels, temp_labels = train_test_split(
+        all_images, all_labels, test_size=0.4, random_state=42, stratify=all_labels
+    )
+    val_imgs, test_imgs, val_labels, test_labels = train_test_split(
+        temp_imgs, temp_labels, test_size=0.5, random_state=42, stratify=temp_labels
+    )
+    
+    print(f"Train: {len(train_imgs)}, Val: {len(val_imgs)}, Test: {len(test_imgs)}")
+    
+    # Optionally enable mixed precision
     if mixed_precision:
         try:
             from tensorflow.keras import mixed_precision
-
             mixed_precision.set_global_policy("mixed_float16")
             print("Mixed precision enabled: policy=mixed_float16")
         except Exception:
             print("Mixed precision requested but unavailable in this TensorFlow build.")
 
-    # Optionally use a distribution strategy (MirroredStrategy)
+    # Optionally use a distribution strategy
     strategy = None
     if use_distribute:
         try:
@@ -227,6 +235,10 @@ def train_single_backbone(
             strategy = None
             print("Requested distribution strategy not available; continuing without it.")
     
+    # Preprocess function for the backbone
+    preprocess_input = _select_preprocess_input(backbone_name)
+    
+    # Create data generators with augmentation for training only
     train_generator = ImageDataGenerator(
         rotation_range=20,
         width_shift_range=0.1,
@@ -235,62 +247,50 @@ def train_single_backbone(
         brightness_range=(0.8, 1.2),
         horizontal_flip=True,
         fill_mode="nearest",
+        preprocessing_function=preprocess_input,
     )
     
-    val_generator = ImageDataGenerator()
-    test_generator = ImageDataGenerator()
+    val_generator = ImageDataGenerator(preprocessing_function=preprocess_input)
+    test_generator = ImageDataGenerator(preprocessing_function=preprocess_input)
     
-    _attach_preprocessing(train_generator, backbone_name)
-    _attach_preprocessing(val_generator, backbone_name)
-    _attach_preprocessing(test_generator, backbone_name)
-
-    train_flow = train_generator.flow_from_directory(
-        str(train_dir),
-        target_size=FACE_INPUT_SIZE,
-        batch_size=batch_size,
-        class_mode="categorical",
-        shuffle=True,
+    # Convert labels to one-hot
+    train_labels_categorical = _keras.utils.to_categorical(train_labels, num_classes)
+    val_labels_categorical = _keras.utils.to_categorical(val_labels, num_classes)
+    test_labels_categorical = _keras.utils.to_categorical(test_labels, num_classes)
+    
+    # Create generators from arrays
+    train_flow = train_generator.flow(
+        train_imgs, train_labels_categorical,
+        batch_size=batch_size, shuffle=True, seed=42
     )
-    val_flow = val_generator.flow_from_directory(
-        str(val_dir),
-        target_size=FACE_INPUT_SIZE,
-        batch_size=batch_size,
-        class_mode="categorical",
-        shuffle=False,
+    val_flow = val_generator.flow(
+        val_imgs, val_labels_categorical,
+        batch_size=batch_size, shuffle=False
     )
-    test_flow = test_generator.flow_from_directory(
-        str(test_dir),
-        target_size=FACE_INPUT_SIZE,
-        batch_size=batch_size,
-        class_mode="categorical",
-        shuffle=False,
+    test_flow = test_generator.flow(
+        test_imgs, test_labels_categorical,
+        batch_size=batch_size, shuffle=False
     )
-
-    # Build model (inside strategy scope if requested)
+    
+    # Build model
     output_dtype = "float32"
     if strategy is not None:
         with strategy.scope():
-            model = build_training_model(num_classes=train_flow.num_classes, backbone_name=backbone_name, output_dtype=output_dtype)
+            model = build_training_model(num_classes=num_classes, backbone_name=backbone_name, output_dtype=output_dtype)
     else:
-        model = build_training_model(num_classes=train_flow.num_classes, backbone_name=backbone_name, output_dtype=output_dtype)
+        model = build_training_model(num_classes=num_classes, backbone_name=backbone_name, output_dtype=output_dtype)
 
-    # Compute class weights to address imbalance
+    # Compute class weights
     try:
-        classes = getattr(train_flow, "classes", None)
-        if classes is not None:
-            counts = _np.bincount(classes, minlength=train_flow.num_classes)
-            total = counts.sum() if counts.sum() > 0 else 1
-            class_weight = {i: float(total) / (train_flow.num_classes * max(1, counts[i])) for i in range(train_flow.num_classes)}
-        else:
-            class_weight = None
+        unique, counts = _np.unique(train_labels, return_counts=True)
+        total = counts.sum()
+        class_weight = {int(u): float(total) / (num_classes * count) for u, count in zip(unique, counts)}
     except Exception:
         class_weight = None
 
     callbacks = [
-        _keras.callbacks.ModelCheckpoint(f"models/{backbone_name}_best.keras", save_best_only=True, monitor="val_accuracy", mode="max"),
         _keras.callbacks.EarlyStopping(monitor="val_accuracy", patience=6, restore_best_weights=True),
         _keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=3),
-        _keras.callbacks.CSVLogger(f"models/{backbone_name}_training.log"),
     ]
 
     # Stage 1: train classifier head
@@ -307,7 +307,6 @@ def train_single_backbone(
     # Stage 2: fine-tune backbone tail
     fine_tune_epochs = max(0, epochs - head_epochs)
     if fine_tune_epochs:
-        # Attempt controlled fine-tuning of last layers
         try:
             base_model = model.layers[1]
             base_model.trainable = True
@@ -329,18 +328,27 @@ def train_single_backbone(
         except Exception:
             print("Fine-tuning failed; proceeding with the trained head model.")
 
-    # Evaluate on held-out test set (no data leakage!)
+    # Evaluate on validation set
+    val_evaluation = model.evaluate(val_flow, verbose=0)
+    val_accuracy = float(val_evaluation[1]) if len(val_evaluation) > 1 else 0.0
+    
+    # Evaluate on held-out test set (NO DATA LEAKAGE - separate from train/val)
+    print("\nEvaluating on test set...")
     test_evaluation = model.evaluate(test_flow, verbose=0)
     test_accuracy = float(test_evaluation[1]) if len(test_evaluation) > 1 else 0.0
-    val_accuracy = float(history.history["val_accuracy"][-1]) if history and "val_accuracy" in history.history else 0.0
     
     print(f"Validation Accuracy: {val_accuracy:.4f}")
-    print(f"Test Accuracy (final unbiased): {test_accuracy:.4f}")
+    print(f"Test Accuracy (final - unbiased): {test_accuracy:.4f}")
     
-    # Cleanup temporary split directory
-    shutil.rmtree(temp_split_dir)
+    # Create a simple object to return train_flow attributes
+    class FlowInfo:
+        def __init__(self, num_classes, class_indices):
+            self.num_classes = num_classes
+            self.class_indices = class_indices
     
-    return history, model, train_flow, test_accuracy, val_accuracy
+    train_flow_info = FlowInfo(num_classes, class_to_idx)
+    
+    return history, model, train_flow_info, test_accuracy, val_accuracy
 
 
 def train_recognition_model(
