@@ -7,8 +7,8 @@ import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 SRC_DIR = PROJECT_ROOT / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def _tensorflow_available() -> bool:
@@ -45,7 +45,7 @@ def _delegate_to_python313_if_needed() -> int | None:
     return completed.returncode
 
 
-from attendance_system.cli import main
+from src.cli import main
 
 
 if __name__ == "__main__":
